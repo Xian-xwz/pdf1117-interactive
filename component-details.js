@@ -40,7 +40,9 @@ export function createDetailLoader(baseURL, gltfLoader) {
   }
   async function loadPreviewSource(source) {
     releasePreviewSource();
-    if(!['image/png','image/jpeg','image/webp'].includes(source.mime))throw new Error('节点预览需图片来源');
+    if(!['image/png','image/jpeg','image/webp','image/svg+xml'].includes(source.mime))throw new Error('节点预览需图片来源');
+    // SVG 仅来自 W2 已核的本 Skill 生成图，并以 <img> 加载（不执行脚本）。
+    if(source.mime==='image/svg+xml'&&!/^detail-drawings\/[A-Za-z0-9_-]+\.svg$/.test(source.path||''))throw new Error('生成图路径无效');
     const active=new AbortController();previewController=active;
     try {
       const buffer=await readFile(source.path,source.sha256,active);
@@ -144,7 +146,8 @@ export function createDetailLoader(baseURL, gltfLoader) {
   }
   async function loadSource(source) {
     releaseSource();
-    const types = ['image/png', 'image/jpeg', 'image/webp', 'text/plain', 'text/markdown', 'text/html'];
+    const types = ['image/png', 'image/jpeg', 'image/webp', 'image/svg+xml', 'text/plain', 'text/markdown', 'text/html'];
+    if (source.mime === 'image/svg+xml' && !/^detail-drawings\/[A-Za-z0-9_-]+\.svg$/.test(source.path || '')) throw new Error('生成图路径无效');
     if (!types.includes(source.mime)) throw new Error('来源格式暂不支持');
     if (source.mime === 'text/html') {
       // HTML仍先校验原始字节；规范相对路径保证页面与其图片均留在同一包。

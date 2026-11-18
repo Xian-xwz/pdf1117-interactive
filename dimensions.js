@@ -2,6 +2,11 @@ import {FontLoader} from './vendor/FontLoader.js';
 import {localText} from './language.js';
 
 // 标注值来自模型；线、界线、斜划和文字均为场景中的网格实体。
+// 视图相机平面基（右、上）：平面图朝下，其余取视图方向；标注排布只依赖它，不读当前相机，缩放平移不改变排布。
+export function viewBasis(T,view){
+ const plan=view?.kind==='plan',z=new T.Vector3(...(view?.direction||(plan?[0,1,0]:[1,.72,1]))).normalize(),up=plan?new T.Vector3(0,0,-1):new T.Vector3(0,1,0);
+ const right=up.clone().cross(z).normalize();return {right,up:z.clone().cross(right).normalize()};
+}
 export function createDimensions({T,scene,camera,viewport,parts=[],cfg={},getView=()=>'',onChange,onModeChange}){
  const group=new T.Group();group.name='model-dimensions';scene.add(group);
  // 放入透明渲染队列末尾，但保持完全不透明，避免透明基础在后续通道盖住字形。
@@ -112,6 +117,22 @@ export function createDimensions({T,scene,camera,viewport,parts=[],cfg={},getVie
   if(enabled&&font){try{mode==='member'?buildMember():buildLayout();}catch(e){reset();error=e.message;}}
   placeLabels();updateText();update();onChange();
  }
+ function layoutTextHeight(){
+  const perPixel=viewport?.clientHeight?(camera.top-camera.bottom)/Math.max(camera.zoom,1e-6)/viewport.clientHeight:0;
+  return Math.max(.20,12*perPixel);
+ }
+ // 取景用：当前视图布置链的尺寸线端点及文字外侧余量，替代旧的整体 1.25 倍放大。
+ function extent(){
+  if(!enabled||mode!=='layout')return [];
+  const points=[],pad=layoutTextHeight()*2.6;
+  for(const chain of cfg.dimension_chains||[]){
+   if(!chain.view_ids.includes(getView()))continue;
+   const refs=[...chain.station_refs,...(chain.end_station?.view_ids.includes(getView())?[chain.end_station.ref]:[])];
+   for(const ref of refs){const part=byId.get(ref);if(!part)continue;const c=part.box.getCenter(new T.Vector3());c.y=chain.elevation;
+    for(const d of [-pad,pad]){const q=c.clone();q[chain.offset_axis]=chain.offset+d;points.push(q);}}
+  }
+  return points;
+ }
  function set(part){owner=part;if(mode==='member')rebuild();}
  // 只在标注重建时排字。此函数不读相机，字形始终固定在模型水平面。
  function placeLabels(){
@@ -123,8 +144,11 @@ export function createDimensions({T,scene,camera,viewport,parts=[],cfg={},getVie
     if(v<0)lo=Math.max(lo,t);else hi=Math.min(hi,t);if(lo>hi)return false;
    }return true;
   };
+  // 屏幕空间（视图基投影）占位：斜向投影下世界平面不重叠的文字仍可能在屏幕上相互压住。
+  const B=viewBasis(T,cfg.views?.find(v=>v.id===getView())),occupiedView=[];
   const extent=owner?owner.box.getSize(new T.Vector3()):new T.Vector3();
-  const textHeight=mode==='layout'?.20:Math.max(.025,Math.min(.20,Math.max(extent.x,extent.y,extent.z)*.025));
+  // 布置链字高与其他标注同一机制：重建时取 max(规则 0.20 m, 当前取景下 12 px)，之后为固定世界尺寸。
+  const textHeight=mode==='layout'?layoutTextHeight():Math.max(.025,Math.min(.20,Math.max(extent.x,extent.y,extent.z)*.025));
   unplaced=0;
   for(const {mesh,length} of segments)mesh.scale.set(.008,length,.008);
   for(const mesh of labels){
@@ -140,11 +164,13 @@ export function createDimensions({T,scene,camera,viewport,parts=[],cfg={},getVie
    for(let step=0;step<32&&!chosen;step++){
     const position=anchor.clone().addScaledVector(move,textHeight*1.1+.09+step*textHeight*1.4);
     const bounds={left:position.x+Math.min(...corners.map(q=>q.x))-.025,right:position.x+Math.max(...corners.map(q=>q.x))+.025,top:position.z+Math.min(...corners.map(q=>q.z))-.025,bottom:position.z+Math.max(...corners.map(q=>q.z))+.025};
-    if(occupied.some(r=>overlaps(bounds,r))||segments.some(({a,b})=>intersects(a,b,bounds)))continue;
-    chosen={position,bounds};
+    const g=.2*textHeight,pu=position.dot(B.right),pv=position.dot(B.up),cu=corners.map(q=>q.dot(B.right)),cv=corners.map(q=>q.dot(B.up));
+    const view={left:pu+Math.min(...cu)-g,right:pu+Math.max(...cu)+g,top:pv+Math.min(...cv)-g,bottom:pv+Math.max(...cv)+g};
+    if(occupied.some(r=>overlaps(bounds,r))||segments.some(({a,b})=>intersects(a,b,bounds))||occupiedView.some(r=>overlaps(view,r)))continue;
+    chosen={position,bounds,view};
    }
    mesh.visible=Boolean(chosen);
-   if(chosen){occupied.push(chosen.bounds);mesh.position.copy(chosen.position);}else unplaced++;
+   if(chosen){occupied.push(chosen.bounds);occupiedView.push(chosen.view);mesh.position.copy(chosen.position);}else unplaced++;
   }
   spacingNote.hidden=unplaced===0;spacingNote.textContent=unplaced?localText('Some labels need layout review.','部分标注需要检查排布。'):'';
  }
@@ -163,5 +189,11 @@ export function createDimensions({T,scene,camera,viewport,parts=[],cfg={},getVie
   }
  }
  updateText();group.visible=false;
- return {set,update,frameScale:()=>enabled&&mode==='layout'&&(cfg.dimension_chains||[]).some(c=>c.view_ids.includes(getView()))?1.25:1,state:()=>({enabled,visible:group.visible,mode,fontReady:Boolean(font),error,unplaced,screenSegments,component:owner?.c.id||null,unit:'mm',values:values.map(v=>({...v})),labels:labels.map(m=>({text:m.userData.text,plane:m.userData.plane,baselineAlignment:Math.abs(new T.Vector3(1,0,0).applyQuaternion(m.quaternion).dot(m.userData.direction)),midpointDrift:m.position.clone().sub(m.userData.anchor).dot(m.userData.direction),planeNormal:new T.Vector3(0,0,1).applyQuaternion(m.quaternion).toArray(),visible:m.visible,screenBounds:m.userData.screenBounds,position:m.position.toArray(),quaternion:m.quaternion.toArray(),scale:m.scale.toArray(),isMesh:m.isMesh,isSprite:Boolean(m.isSprite),geometry:m.geometry.type,vertices:m.geometry.attributes.position.count,depth:m.geometry.parameters.options.depth,normalDot:new T.Vector3(0,0,1).applyQuaternion(m.quaternion).dot(new T.Vector3(0,0,1).applyQuaternion(camera.quaternion))})),sceneObjects:group.children.length})};
+ // 排布用：当前可见尺寸文字的世界角点（每个文字 8 点），供标注避让。
+ function obstacles(){
+  if(!enabled||!font||!values.length||(mode!=='layout'&&!owner?.o.visible))return [];
+  return labels.filter(m=>m.visible).map(mesh=>{const b=mesh.geometry.boundingBox;
+   return Array.from({length:8},(_,i)=>new T.Vector3(i&1?b.max.x:b.min.x,i&2?b.max.y:b.min.y,i&4?b.max.z:b.min.z).multiply(mesh.scale).applyQuaternion(mesh.quaternion).add(mesh.position));});
+ }
+ return {set,update,extent,obstacles,frameScale:()=>1,state:()=>({enabled,visible:group.visible,mode,fontReady:Boolean(font),error,unplaced,screenSegments,component:owner?.c.id||null,unit:'mm',values:values.map(v=>({...v})),labels:labels.map(m=>({text:m.userData.text,plane:m.userData.plane,baselineAlignment:Math.abs(new T.Vector3(1,0,0).applyQuaternion(m.quaternion).dot(m.userData.direction)),midpointDrift:m.position.clone().sub(m.userData.anchor).dot(m.userData.direction),planeNormal:new T.Vector3(0,0,1).applyQuaternion(m.quaternion).toArray(),visible:m.visible,screenBounds:m.userData.screenBounds,position:m.position.toArray(),quaternion:m.quaternion.toArray(),scale:m.scale.toArray(),isMesh:m.isMesh,isSprite:Boolean(m.isSprite),geometry:m.geometry.type,vertices:m.geometry.attributes.position.count,depth:m.geometry.parameters.options.depth,normalDot:new T.Vector3(0,0,1).applyQuaternion(m.quaternion).dot(new T.Vector3(0,0,1).applyQuaternion(camera.quaternion))})),sceneObjects:group.children.length})};
 }

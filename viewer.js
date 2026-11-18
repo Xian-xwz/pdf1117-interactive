@@ -1,5 +1,6 @@
 import {configureControls} from './configuration.js';
 import {createDimensions} from './dimensions.js';
+import {createAnnotations} from './annotations.js';
 import {createViewControls} from './view-controls.js';
 import {OrbitControls} from './vendor/OrbitControls.js';
 import {createDetailLoader} from './component-details.js';
@@ -15,16 +16,34 @@ export function install(env){
  // 小窗与右侧详情共存，放大继续使用来源弹窗及独立资源生命周期。
  const nodePreview=document.createElement('section');nodePreview.className='node-preview';nodePreview.hidden=true;viewport.append(nodePreview);
  let previewGeneration=0;
- function closeNodePreview(){previewGeneration++;detailLoader.releasePreviewSource();nodePreview.hidden=true;nodePreview.replaceChildren();}
+ const detailSlots=cfg.detail_slots||[];
+ // 与 W2 同一规则：按 detail_slots 顺序取首个命中的 Detail 位。
+ // 机器生成位可含参数分组图：按选中构件所在组取图；不在任何组时返回 null（显示主图并明示不同）。
+ const slotVariant=(slot,c)=>slot?.source?.variants?.find(v=>v.members.includes(c.id))||null;
+ const slotOf=c=>detailSlots.find(s=>s.match?.ids?.includes(c.id)||s.match?.roles?.includes(c.role)||s.match?.groups?.includes(c.group))||null;
+ function closeNodePreview(){previewGeneration++;detailLoader.releasePreviewSource();nodePreview.hidden=true;nodePreview.replaceChildren();delete nodePreview.dataset.slot;}
  async function showNodePreview(p,c){
   closeNodePreview();
-  const source=c.parameters?.viewer?.sources?.find(s=>s.presentation_role==='node_detail'&&s.mime?.startsWith('image/'));
+  // 来源优先级：构件节点图（资料截图简化形式）> Detail 位截图 > 机器制图；待提供不弹图。
+  let source=c.parameters?.viewer?.sources?.find(s=>s.presentation_role==='node_detail'&&s.mime?.startsWith('image/'));
+  let caption='';
+  const slot=slotOf(p.c);
+  if(!source&&slot&&slot.status!=='pending'){
+   const s=slot.source,variant=slotVariant(slot,p.c);source={...(variant?.image||s.image),title:slot.title};
+   caption=s.kind==='generated'?`Generated drawing, not original · ${s.scale} / 生成图，非原图 · ${s.scale}`:`Document crop · page ${s.page} / 资料截图 · 第${s.page}页`;
+   if(s.kind==='generated'&&s.variants?.length){
+    caption+=variant?` · Typical: represents ${variant.typical_count}/${variant.total_count} piles (ref ${variant.representative}); selected ${p.c.id} is in this group / 代表 ${variant.typical_count}/${variant.total_count} 根（参考 ${variant.representative}），当前选中 ${p.c.id} 属于此组`
+     :` · Selected ${p.c.id} is not in the typical group; its parameters differ from this drawing / 当前选中 ${p.c.id} 不属于代表组，参数与本图不同`;
+   }
+  }
   if(!source)return;
+  if(caption)source={...source,locator:caption};
   const generation=previewGeneration;
   nodePreview.hidden=false;nodePreview.setAttribute('aria-label',translated('Connection figure / 节点详图'));
   const close=el('button','×','node-preview-close');close.type='button';close.setAttribute('aria-label',translated('Close figure / 收起节点图'));close.onclick=()=>{nodePreview.hidden=true;};
   const button=el('button','Loading source / 正在读取依据','node-preview-image');button.type='button';button.setAttribute('aria-label',translated('Click to enlarge / 点击放大'));nodePreview.dataset.source=source.path;
   nodePreview.append(close,button);
+  if(caption){nodePreview.dataset.slot=slot.id;nodePreview.append(el('p',caption,'node-preview-caption'));}
   button.onclick=()=>openSource(source,button);
   try{
    const url=await detailLoader.loadPreviewSource(source);
@@ -42,6 +61,12 @@ export function install(env){
  let view=cfg.default_view||cfg.views[0].id,roof=true,terrain=false,trusses=false,selected=null,dirty=true,down=null,initialized=false,surface=cfg.ground_default||'finished';
  const dimensions=createDimensions({T,scene,camera,viewport,parts,cfg,getView:()=>view,onChange:()=>dirty=true,onModeChange:target=>target?preset(target):applyView()});
  const viewControls=createViewControls(cfg,views,()=>applyView(false));
+ const annotations=createAnnotations({T,scene,camera,viewport,parts,cfg,views,getView:()=>view,onChange:()=>dirty=true,onLayout:()=>applyView(),dimensionToggle:()=>document.querySelector('#dimensions-toggle'),dimensionExtent:()=>dimensions.extent(),dimensionObstacles:()=>dimensions.obstacles()});
+ // viewer_framework 包：屋面/屋架只由 scene.floor_layers 驱动，固定开关不渲染（旧包不变）。
+ const framework=cfg.viewer_framework===1;
+ const soleLayer=g=>framework?cfg.floor_layers.find(l=>l.groups?.length===1&&l.groups[0]===g&&!l.floors)?.id:undefined;
+ const roofLayer=soleLayer('roof'),trussLayer=soleLayer('trusses');
+ for(const [id,layer] of [['roof',roofLayer],['trusses',trussLayer]])if(layer){const label=document.getElementById(id).closest('label');label.hidden=true;label.style.display='none';}
  const foundationGroups=new Set(['framing','foundation']);
  const inViewScope=(c,v)=>(!v.groups||v.groups.includes(c.group))&&(!v.block||v.block===c.block)&&
   (!v.floors||v.floors.includes(c.floor));
@@ -99,12 +124,15 @@ export function install(env){
  const meshMap=new Map(),baseTransforms=parts.map(p=>p.o.matrixWorld.toArray());
  for(const p of parts)for(const m of p.meshes)meshMap.set(m,p);
  const corners=b=>Array.from({length:8},(_,i)=>new T.Vector3(i&1?b.max.x:b.min.x,i&2?b.max.y:b.min.y,i&4?b.max.z:b.min.z));
- function fit(direction){
+ // 取景与标注字高互相依赖（字高取屏幕下限换算、标注外包又决定取景），迭代三次收敛后标注再据最终相机重排。
+ function fit(direction){for(let pass=0;pass<3;pass++)fitOnce(direction);}
+ function fitOnce(direction){
   controls.enableDamping=false;controls.update();controls.enableDamping=true;
   const current=views.get(view),plan=current.kind==='plan',box=new T.Box3();
   for(const p of parts)if(plan&&!current.groups?p.c.group!=='roof':p.o.visible)box.union(p.box);
   if(groundGroup.visible)for(const b of groundBoxes)box.union(b);
   if(box.isEmpty()){for(const p of parts)box.union(p.box);}
+  for(const point of [...annotations.extent(),...dimensions.extent()])box.expandByPoint(point);
   const center=box.getCenter(new T.Vector3());camera.up.set(0,1,0);if(plan)camera.up.set(0,0,-1);camera.zoom=1;controls.target.copy(center);camera.position.copy(center).add(new T.Vector3(...direction).normalize().multiplyScalar(90));camera.lookAt(center);camera.updateMatrixWorld();
   const ps=corners(box).map(p=>p.applyMatrix4(camera.matrixWorldInverse)),xs=ps.map(p=>p.x),ys=ps.map(p=>p.y),aspect=viewport.clientWidth/viewport.clientHeight;
   const span=Math.max((Math.max(...ys)-Math.min(...ys))/.76/2,(Math.max(...xs)-Math.min(...xs))/aspect/.88/2)*dimensions.frameScale();
@@ -140,7 +168,7 @@ export function install(env){
   for(const [id,on,disabled]of [['roof',roof,plan||cut],['trusses',trusses,plan],['terrain',terrain,plan]]){const e=document.getElementById(id);e.disabled=disabled||e.dataset.unavailable==='true';e.checked=on&&!e.disabled;}
   document.querySelector('#surface').disabled=(!groundGroup.visible&&!terrainVisible)||(cfg.ground_states||[]).length<2;
   terrainOpacityControl.checked=terrainTranslucent;
-  for(const l of cfg.floor_layers)document.getElementById('layer-'+l.id).checked=layers[l.id];
+  for(const l of cfg.floor_layers){const e=document.getElementById('layer-'+l.id);e.checked=layers[l.id];e.disabled=(l.id===roofLayer&&(plan||cut))||(l.id===trussLayer&&plan);}
   for(const b of document.querySelectorAll('[data-wall]')){const active=b.dataset.wall===wallMode;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));}
   document.querySelector('#layer-hint').textContent=plan?'Floor slice / 楼层切片':cut?'Roof hidden for the section / 剖切隐藏屋面':surface==='existing'&&groundGroup.visible?'Existing ground; proposed buildings for reference / 现状地形，拟建建筑用于定位':'Toggle layers to explore / 可切换图层';
   if(blinkEnabled&&selected&&(!selected.o.visible||isSelectionClipped(selected)))clearSelection();
@@ -246,6 +274,9 @@ export function install(env){
   for(const reference of p.c.object_refs||[]){
    provenance.append(el('p',`Object / 对象：${reference.object_id}`),el('p',`Revision / 修订：${reference.object_revision} · ${reference.consumption_mode==='candidate_preview'?'Design preview / 设计候选':'Source projection / 来源投影'}`));
   }
+  const slot=slotOf(p.c);
+  if(slot){const status=slot.status==='generated'?`Generated ${slot.source.scale} / 机器生成`:slot.status==='document_crop'?'Document crop / 资料截图':'Detail pending / Detail 待提供';
+   const row=el('p',`Detail · ${slot.title} · ${status}`,'detail-slot');row.dataset.slot=slot.id;row.dataset.status=slot.status;d.append(row);}
   d.append(renderPresentation(c,p.c.object_refs||[],{selectRelated:(id,button)=>{const target=partById.get(id);if(target)select(target);else button.after(el('p','Related component not in this model / 当前模型无此关联构件'));},openSource}));
   showNodePreview(p,c);
   const size=p.box.getSize(new T.Vector3());provenance.append(el('p',`Model extents / 模型包围尺寸：${size.toArray().map(x=>x.toFixed(2)).join(' × ')} m`));
@@ -290,7 +321,8 @@ export function install(env){
   select(hit?(instances.partFor(hit)||meshMap.get(hit.object)):null);return selected?.c.id||null;
  }
  function preset(id){view=id;const current=views.get(id);for(const l of cfg.floor_layers)layers[l.id]=true;
-  roof=current.roof??current.kind!=='plan';trusses=current.trusses??!current.groups;terrain=terrainByView[id]??current.terrain??hasTerrain;
+  roof=current.roof??current.kind!=='plan';trusses=current.trusses??!current.groups;
+  if(roofLayer){layers[roofLayer]=roof;roof=true;}if(trussLayer){layers[trussLayer]=trusses;trusses=true;}terrain=terrainByView[id]??current.terrain??hasTerrain;
   if((cfg.ground_states||[]).includes(current.ground_surface)){
    surface=current.ground_surface;setGroundSurface(surface);document.querySelector('#surface').value=surface;
   }
@@ -335,10 +367,12 @@ export function install(env){
    const strength=blinkEnabled?(elapsed%periodMs<blink.bright_ms ? .20 : 0):.16+.10*(.5-.5*Math.cos(elapsed*Math.PI*2/periodMs));
    if(strength!==pulseStrength)applyHighlight(strength);
   }
-  if(!dirty)return;dirty=false;dimensions.update(!selected||!isSelectionClipped(selected));renderer.render(scene,camera);
+  if(!dirty)return;dirty=false;dimensions.update(!selected||!isSelectionClipped(selected));annotations.update();renderer.render(scene,camera);
   const pin=document.querySelector('#pin');if(selected){const center=selected.box.getCenter(new T.Vector3()),q=center.clone().project(camera),x=(q.x*.5+.5)*viewport.clientWidth,y=(.5-q.y*.5)*viewport.clientHeight;pin.textContent=selected.displayLabel||selected.c.id;pin.hidden=!selected.o.visible||(selected.meshes[0]?.material.clippingPlanes||[]).some(pl=>pl.distanceToPoint(center)<-1e-5)||q.z<-1||q.z>1||Math.abs(q.x)>1||Math.abs(q.y)>1;pin.style.left=Math.min(viewport.clientWidth-100,Math.max(8,x+12))+'px';pin.style.top=Math.max(8,y-24)+'px';}}
  window.viewer={state:()=>({view,surface,visibleIds:parts.filter(p=>p.o.visible).map(p=>p.c.id),catalog,wallTheme,effectiveTheme:catalog==='arc'?'material':wallTheme,wallColors:Object.fromEntries(parts.filter(p=>p.c.group==='walls').map(p=>[p.c.id,p.meshes[0].material.color.getHexString()])),visible:parts.filter(p=>p.o.visible).length,total:parts.length,wallMode,layers:{...layers},groups:Object.fromEntries([...new Set(parts.map(p=>p.c.group))].map(g=>[g,parts.filter(p=>p.c.group===g&&p.o.visible).length])),upperEnvelope:parts.filter(p=>isEnvelope(p.c)&&p.o.visible).length,framing:parts.filter(p=>p.c.group==='framing'&&p.o.visible).length,opacity:wallMode==='overlay'?.10:1,trusses:parts.filter(p=>p.c.group==='trusses'&&p.o.visible).length,terrain:groundGroup.visible||parts.some(p=>isTerrain(p.c)&&p.o.visible),terrainCaps:caps.children.filter(m=>isTerrain(meshMap.get(m)?.c||{})).map(m=>({opacity:m.material.opacity,depthWrite:m.material.depthWrite})),localTerrainMaterials:localModel&&selected&&isTerrain(selected.c)?materialStates(localModel):[],terrainMaterials:parts.filter(p=>isTerrain(p.c)).map(p=>({id:p.c.id,visible:p.o.visible,opacity:p.meshes[0].material.opacity,depthWrite:p.meshes[0].material.depthWrite,castShadow:p.meshes[0].castShadow})),roof:parts.filter(p=>p.c.group==='roof'&&p.o.visible).length,caps:caps.children.length,selected:selected?.c.id||null,objectRefs:selected?.c.object_refs||[],detail:detailLoader.state(),selectedInstanced:selected?.meshes.some(mesh=>instances.owns(mesh))||false,instances:instances.stats(),renderCalls:renderer.info.render.calls,geometryBuffers:renderer.info.memory.geometries,camera:camera.position.toArray(),target:controls.target.toArray(),zoom:camera.zoom,geometryUnchanged:parts.every((p,i)=>p.o.matrixWorld.toArray().every((x,j)=>Math.abs(x-baseTransforms[i][j])<1e-9))}),project:id=>{const p=parts.find(p=>p.c.id===id);if(!p)return null;const m=p.meshes[0],g=m.geometry,pos=g.attributes.position,ix=g.index;let best=-1,point=new T.Vector3();for(let i=0;i<(ix?ix.count:pos.count);i+=3){const a=[0,1,2].map(j=>new T.Vector3().fromBufferAttribute(pos,ix?ix.getX(i+j):i+j));const area=a[1].clone().sub(a[0]).cross(a[2].clone().sub(a[0])).lengthSq();if(area>best){best=area;point.copy(a[0]).add(a[1]).add(a[2]).multiplyScalar(1/3);}}const q=point.applyMatrix4(m.matrixWorld).project(camera),rect=canvas.getBoundingClientRect();return [rect.left+(q.x*.5+.5)*rect.width,rect.top+(.5-q.y*.5)*rect.height];}};
+ // 验证钩子：按世界包围盒投影（fy 为竖向比例），不依赖网格三角形或实例批次。
+ window.viewer.projectBox=(id,fy=.5)=>{const p=parts.find(p=>p.c.id===id);if(!p)return null;const q=p.box.getCenter(new T.Vector3());q.y=p.box.min.y+(p.box.max.y-p.box.min.y)*fy;q.project(camera);const rect=canvas.getBoundingClientRect();return [rect.left+(q.x*.5+.5)*rect.width,rect.top+(.5-q.y*.5)*rect.height];};
  const materialStates=object=>{const states=[];object.traverse(m=>{if(m.isMesh)states.push({opacity:m.material.opacity,depthWrite:m.material.depthWrite,castShadow:m.castShadow});});return states;};
- const originalState=window.viewer.state;window.viewer.state=()=>({...originalState(),dimensions:dimensions.state(),terrainTranslucent,shadows:renderer.shadowMap.enabled,language:currentLanguage(),selectionPulse:{active:Boolean(selected&&!reducedMotion.matches&&selected.o.visible&&!document.hidden),reducedMotion:reducedMotion.matches,periodMs,strength:pulseStrength}});
+ const originalState=window.viewer.state;window.viewer.state=()=>({...originalState(),dimensions:dimensions.state(),annotations:annotations.state(),floorLayerOrder:cfg.floor_layers.map(l=>l.id),fixedLayerToggles:['roof','trusses'].filter(id=>Boolean(document.getElementById(id).offsetParent)),floorLayerLabels:[...document.querySelectorAll('#floor-layers label span')].map(e=>e.textContent),detailSlot:selected?(()=>{const s=slotOf(selected.c);if(!s)return null;const v=slotVariant(s,selected.c);return {id:s.id,status:s.status,image:(v?.image||s.source.image)?.path||null,variant:v?{representative:v.representative,typical_count:v.typical_count,total_count:v.total_count,selectedInGroup:true}:s.source.variants?{selectedInGroup:false}:null};})():null,nodePreview:{hidden:nodePreview.hidden,slot:nodePreview.dataset.slot||null,imageLoaded:Boolean(nodePreview.querySelector('img')?.complete&&nodePreview.querySelector('img')?.naturalWidth)},terrainTranslucent,shadows:renderer.shadowMap.enabled,language:currentLanguage(),selectionPulse:{active:Boolean(selected&&!reducedMotion.matches&&selected.o.visible&&!document.hidden),reducedMotion:reducedMotion.matches,periodMs,strength:pulseStrength}});
  document.querySelector('#loading').hidden=true;translateTree();window.ready=true;draw();
 }

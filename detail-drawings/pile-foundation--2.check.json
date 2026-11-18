@@ -1,0 +1,90 @@
+{
+  "generator": {
+    "id": "pile_detail",
+    "version": "1.0.0-candidate.1"
+  },
+  "inputs": {
+    "template": "pile_detail",
+    "pile": {
+      "id": "GF-HOUSE-PILE-M01",
+      "width_mm": 125.0,
+      "bottom_mm": -1300.0,
+      "top_mm": 330.0,
+      "status": "schematic"
+    },
+    "footing": {
+      "id": "GF-HOUSE-PILE-M01-FOOTING",
+      "diameter_mm": 450.0,
+      "bottom_mm": -1400.0,
+      "top_mm": 0.0,
+      "status": "drawing"
+    },
+    "bearer": {
+      "id": "GF-HOUSE-BEARER-M",
+      "width_mm": 100.0,
+      "depth_mm": 100.0,
+      "top_mm": 430.0,
+      "status": "derived"
+    },
+    "joist": {
+      "id": "GF-HOUSE-JOIST-002",
+      "width_mm": 50.0,
+      "depth_mm": 150.0,
+      "top_mm": 580.0,
+      "status": "derived"
+    },
+    "ground": {
+      "id": "SITE-GROUND",
+      "level_mm": 0.0,
+      "label": "FGL",
+      "status": "schematic"
+    },
+    "fixing": null,
+    "pile_count": 27,
+    "typical_count": 2
+  },
+  "inputs_sha256": "cb481da2c77c6587bd7af6fd7e1f868b383876597484b8a2ba667edcaeb4ba92",
+  "scale": "1:10",
+  "pending_items": [
+    "fixing"
+  ],
+  "representative": "GF-HOUSE-PILE-M01",
+  "typical_count": 2,
+  "total_count": 27,
+  "self_check": {
+    "scale": "1:10",
+    "tolerance_mm": 0.5,
+    "dimensions": [
+      {
+        "dim": "footing_diameter",
+        "text": "450",
+        "measured_mm": 450.0,
+        "pass": true
+      },
+      {
+        "dim": "side_cover",
+        "text": "162.5",
+        "measured_mm": 162.5,
+        "pass": true
+      },
+      {
+        "dim": "bottom_cover",
+        "text": "100",
+        "measured_mm": 100.0,
+        "pass": true
+      },
+      {
+        "dim": "embedment",
+        "text": "1400*",
+        "measured_mm": 1400.0,
+        "pass": true
+      },
+      {
+        "dim": "pile_above_ground",
+        "text": "330*",
+        "measured_mm": 330.0,
+        "pass": true
+      }
+    ]
+  }
+}
