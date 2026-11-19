@@ -50,7 +50,8 @@ export function createAnnotations({T,scene,camera,viewport,parts=[],cfg={},views
  const missingNote=document.createElement('small');missingNote.style.cssText='display:block;margin-top:6px;line-height:1.5';panel.append(missingNote);
  document.querySelector('#shared-controls summary').after(panel);
  const count=(kind,view)=>kind==='dimension_chain'?(cfg.dimension_chains||[]).filter(c=>c.view_ids.includes(view)).length:items.filter(i=>i.kind===kind&&i.view_ids.includes(view)).length;
- const enabled=kind=>kind==='dimension_chain'?Boolean(dimensionToggle()?.checked):(userChoice[kind]??(defaults[getView()]||[]).includes(kind));
+ // 切换视图即带出该视图全部标注；分类开关只用于手动隐藏（用户选择跨视图保持）。
+ const enabled=kind=>kind==='dimension_chain'?Boolean(dimensionToggle()?.checked):(userChoice[kind]??true);
  function updatePanel(){
   const view=getView();heading.textContent=localText('Annotations','标注分类');
   for(const [kind] of CATEGORIES){const {input,name}=boxes[kind],n=count(kind,view);
@@ -98,6 +99,8 @@ export function createAnnotations({T,scene,camera,viewport,parts=[],cfg={},views
   mesh.userData.text=content;mesh.userData.itemId=current?.id;mesh.userData.kind=current?.kind;group.add(mesh);return mesh;
  }
  const center=part=>part.box.getCenter(new T.Vector3());
+ // 窄视窗平面图引注只写编号（mark），完整规格见明细表，避免长文字挤小模型。
+ const labelText=item=>item.mark&&(views.get(getView())||{}).kind==='plan'&&viewport.clientWidth<600?item.mark:item.text;
  function draw(item,f,L=null){
   const s=textHeight(),k=s/.22;scopeBounds();
   // 轴线、剖切符号、平面引注落在构件与尺寸链共同外包之外，不与尺寸文字重叠。
@@ -118,7 +121,7 @@ export function createAnnotations({T,scene,camera,viewport,parts=[],cfg={},views
    const end=item.offset?at.clone().add(new T.Vector3(...item.offset)):place?place.end:at.clone().add(f.up.clone().multiplyScalar(.7*k).addScaledVector(f.axis,.7*k));
    const sign=place?.sign||1,shoulder=end.clone().addScaledVector(f.axis,.25*k*sign);
    const d=.03;segments([at,end,end,shoulder],true);segments([at.clone().addScaledVector(f.axis,-d),at.clone().addScaledVector(f.axis,d),at.clone().addScaledVector(f.up,-d),at.clone().addScaledVector(f.up,d)]);
-   return text(item.text,shoulder.clone().addScaledVector(f.axis,.05*sign),f,s,sign>0?'left':'right');
+   return text(labelText(item),shoulder.clone().addScaledVector(f.axis,.05*sign),f,s,sign>0?'left':'right');
   }
   if(item.kind==='grid'){
    const index=item.axis==='x'?'x':'z',other=index==='x'?'z':'x',[lo,hi]=item.extent||[outer.min[other]-.3*k,outer.max[other]+.3*k];
@@ -202,7 +205,19 @@ export function createAnnotations({T,scene,camera,viewport,parts=[],cfg={},views
    if(t1){t1.q='text-clear';return t1;}
    const semi=candidates.find(c=>free(c.r));if(semi){semi.q='semi';return semi;}first.q='first';return first;};
   const byCost=list=>list.sort((a,b)=>a.cost-b.cost);
-  for(const item of wanted.filter(i=>i.kind==='member_label'&&!i.offset)){
+  // 平面图：引注文字竖排成一列，置于构件与尺寸文字外包的左侧，按指示点自上而下排序、等距错开，文字互不重叠，引线按序不交叉。
+  if(plan){
+   const col=wanted.filter(i=>i.kind==='member_label'&&!i.offset&&byId.has(i.ref)).map(item=>{const A=center(byId.get(item.ref));return {item,A,a:uv(A)};});
+   if(col.length){
+    scopeBounds();const xs=[...hullAll.map(p=>p[0]),...solid.map(r=>r.l),uv(bounds.min)[0],uv(bounds.max)[0]].filter(Number.isFinite);
+    const left=Math.min(...xs)-1.2*k,pitch=1.9*s;let prev=Infinity;
+    col.sort((p,q)=>q.a[1]-p.a[1]||p.a[0]-q.a[0]);
+    for(const c of col){const y=Math.min(c.a[1],prev-pitch);prev=y;
+     const E=c.A.clone().addScaledVector(f.axis,left+.3*k-c.a[0]).addScaledVector(f.up,y-c.a[1]);
+     out.set(c.item.id,{anchor:c.A,end:E,sign:-1,q:'column'});solid.push({l:left-textWidth(labelText(c.item),s)-.1,r:left+.3*k,b:y-s/2,t:y+s/2});leaders.push([c.a,[left+.3*k,y]]);}
+   }
+  }
+  for(const item of wanted.filter(i=>!plan&&i.kind==='member_label'&&!i.offset)){
    const part=byId.get(item.ref);if(!part)continue;
    const w=textWidth(item.text,s),ext=.25*k+.05+w,mid=center(part);
    const lats=plan?[.5*k,...Array.from({length:12},(_,j)=>[.5*k+(j+1)*2*s,.5*k-(j+1)*2*s]).flat()]:[0,...Array.from({length:16},(_,j)=>[(j+1)*1.5*s,-(j+1)*1.5*s]).flat()];
@@ -238,13 +253,22 @@ export function createAnnotations({T,scene,camera,viewport,parts=[],cfg={},views
   lastLayout=[...out].map(([id,v])=>({id,q:v.q}));return out;
  }
  const labelsInView=()=>items.filter(i=>i.kind==='member_label'&&i.view_ids.includes(getView())).map(i=>i.id);
- const tables=document.createElement('div');tables.id='annotation-schedules';tables.style.cssText='position:absolute;left:8px;bottom:8px;display:flex;flex-direction:column;gap:6px;max-width:46%;pointer-events:none;z-index:3';
- (viewport.parentElement||viewport).append(tables);
- function drawTables(list){tables.replaceChildren();for(const it of list){const box=document.createElement('table');box.style.cssText='border-collapse:collapse;background:rgba(255,255,255,.92);color:#111;font:600 12px/1.3 sans-serif;border:1.5px solid #111';const cap=document.createElement('caption');cap.textContent=it.title;cap.style.cssText='font:700 13px sans-serif;padding:2px 6px;background:rgba(255,255,255,.92);border:1.5px solid #111;border-bottom:0';box.append(cap);const head=box.insertRow();for(const c of it.columns){const th=document.createElement('th');th.textContent=c;th.style.cssText='border:1px solid #111;padding:2px 6px;text-align:left';head.append(th);}for(const r of it.rows){const tr=box.insertRow();for(const c of r){const td=tr.insertCell();td.textContent=c;td.style.cssText='border:1px solid #111;padding:2px 6px';}}tables.append(box);}}
+ // 明细表与说明是图纸上的文字块：停靠视窗右侧（竖排）或底部（横排），取景按两种停靠各算一次、取模型更大者并让出其占位，不压模型；
+ // 手机单列布局（main 为 block）时移到视窗下方随页面流动，不占视窗。dock(side) 设定停靠并返回占位像素（右侧为宽，底部为高）。
+ const tables=document.createElement('div');tables.id='annotation-schedules';
+ viewport.append(tables);
+ const stacked=()=>getComputedStyle(viewport.parentElement).display==='block';
+ const DOCK={right:'position:absolute;right:8px;top:8px;left:auto;bottom:auto;display:flex;flex-direction:column;align-items:flex-end;gap:6px;max-width:46%;max-height:calc(100% - 80px);overflow:auto;z-index:3',
+  bottom:'position:absolute;left:8px;right:150px;bottom:8px;top:auto;display:flex;flex-direction:row;flex-wrap:wrap;align-items:flex-end;gap:6px;max-height:45%;overflow:auto;z-index:3'};
+ tables.style.cssText=DOCK.right;
+ function dock(side){
+  if(stacked()){if(tables.parentElement===viewport)viewport.after(tables);tables.style.cssText='display:flex;flex-wrap:wrap;gap:6px;padding:8px;overflow-x:auto';return 0;}
+  if(tables.parentElement!==viewport)viewport.append(tables);tables.style.cssText=DOCK[side];if(!tables.childElementCount)return 0;return (side==='right'?tables.offsetWidth:tables.offsetHeight)+16;}
+ function drawTables(list){tables.replaceChildren();for(const it of list){if(it.kind==='note'){const n=document.createElement('div');n.textContent=it.text;n.dataset.itemId=it.id;n.style.cssText='max-width:360px;background:rgba(255,255,255,.92);color:#7a2d1f;font:600 12px/1.4 sans-serif;border:1.5px solid #7a2d1f;padding:4px 8px';tables.append(n);continue;}const box=document.createElement('table');box.style.cssText='border-collapse:collapse;background:rgba(255,255,255,.92);color:#111;font:600 12px/1.3 sans-serif;border:1.5px solid #111';const cap=document.createElement('caption');cap.textContent=it.title;cap.style.cssText='font:700 13px sans-serif;padding:2px 6px;background:rgba(255,255,255,.92);border:1.5px solid #111;border-bottom:0';box.append(cap);const head=box.insertRow();for(const c of it.columns){const th=document.createElement('th');th.textContent=c;th.style.cssText='border:1px solid #111;padding:2px 6px;text-align:left';head.append(th);}for(const r of it.rows){const tr=box.insertRow();for(const c of r){const td=tr.insertCell();td.textContent=c;td.style.cssText='border:1px solid #111;padding:2px 6px';}}tables.append(box);}}
  function clear(){tables.replaceChildren();for(const o of [...group.children]){o.geometry.dispose();group.remove(o);}built=[];}
  function rebuild(){
   clear();error='';lastKey=viewKey();
-  const all=items.filter(i=>i.view_ids.includes(getView())&&enabled(i.kind)),wanted=all.filter(i=>i.kind!=='schedule');drawTables(all.filter(i=>i.kind==='schedule'));built.push(...all.filter(i=>i.kind==='schedule').map(i=>i.id));
+  const all=items.filter(i=>i.view_ids.includes(getView())&&enabled(i.kind)),block=i=>i.kind==='schedule'||i.kind==='note',wanted=all.filter(i=>!block(i));drawTables(all.filter(block));built.push(...all.filter(block).map(i=>i.id));
   if(wanted.length&&!font){loadFont();}
   else if(font){const f=frame();let L=null;try{L=computeLayout(wanted,f);}catch(e){error=e.message;}for(const item of wanted){current=item;try{draw(item,f,L);built.push(item.id);}catch(e){error=e.message;}}current=null;}
   updatePanel();onChange();
@@ -254,7 +278,7 @@ export function createAnnotations({T,scene,camera,viewport,parts=[],cfg={},views
  function update(){if(lastKey!==viewKey())rebuild();}
  // 取景用：按与绘制相同的几何估算当前视图已开启标注的外包点（无需字形，文字宽按字数估算）。
  function extent(){
-  const points=[],wanted=items.filter(i=>i.view_ids.includes(getView())&&enabled(i.kind)),f=frame();let L=null;try{L=computeLayout(wanted,f);}catch(e){}
+  const points=[],wanted=items.filter(i=>i.view_ids.includes(getView())&&enabled(i.kind)&&i.kind!=='schedule'&&i.kind!=='note'),f=frame();let L=null;try{L=computeLayout(wanted,f);}catch(e){}
   sink=points;
   try{for(const item of wanted){try{draw(item,f,L);}catch(e){}}}finally{sink=null;}
   return points;
@@ -290,7 +314,7 @@ export function createAnnotations({T,scene,camera,viewport,parts=[],cfg={},views
   if(v.kind!=='section'){const pts=[];for(const p of parts)if(p.o.visible&&!ground(p.c))for(let i=0;i<8;i++)pts.push(px(new T.Vector3(i&1?p.box.max.x:p.box.min.x,i&2?p.box.max.y:p.box.min.y,i&4?p.box.max.z:p.box.min.z)));hull=hullOf(pts);}
   return {texts,leaders,hull,width:W,height:H};
  }
- return {update,rebuild,extent,state:()=>({screenLayout:screenLayout(),layoutQuality:lastLayout,fontReady:Boolean(font),error,view:getView(),textHeight:textHeight(),screenBounds:screenBounds(),
+ return {update,rebuild,extent,dock,state:()=>({screenLayout:screenLayout(),layoutQuality:lastLayout,fontReady:Boolean(font),error,view:getView(),textHeight:textHeight(),screenBounds:screenBounds(),
   categories:Object.fromEntries(CATEGORIES.map(([kind])=>[kind,{enabled:enabled(kind),count:count(kind,getView()),disabled:boxes[kind].input.disabled}])),
   visibleItems:[...built],texts:group.children.filter(o=>o.isMesh).map(o=>o.userData.text),objects:group.children.length,
   missing:(status.missing||[]).filter(m=>m.view===getView())})};

@@ -15,7 +15,7 @@ export function createDimensions({T,scene,camera,viewport,parts=[],cfg={},getVie
  const cylinder=new T.CylinderGeometry(1,1,1,8),segments=[],labels=[],values=[];
  const byId=new Map(parts.map(p=>[p.c.id,p]));
  const layoutViews=[...new Set((cfg.dimension_chains||[]).flatMap(chain=>chain.view_ids))];
- let owner=null,enabled=false,mode=layoutViews.length?'layout':'member',font=null,fontPending=null,error='',lastView='',unplaced=0;
+ let owner=null,enabled=layoutViews.length>0,mode=layoutViews.length?'layout':'member',font=null,fontPending=null,error='',lastView='',unplaced=0;
  let screenSegments=[];
  const control=document.createElement('section');control.className='dimension-control';
  control.style.cssText='margin:14px 0;padding:14px;border:2px solid #527d75;border-radius:6px;color:#234f55;background:#e6eee8;font-size:15px';
@@ -48,6 +48,8 @@ export function createDimensions({T,scene,camera,viewport,parts=[],cfg={},getVie
    .finally(()=>{fontPending=null;});
  }
  toggle.onchange=()=>{enabled=toggle.checked;modeChanged();if(enabled)loadFont();};select.onchange=()=>{mode=select.value;modeChanged();};
+ // 有布置尺寸链的项目默认开启尺寸（切视图即带出全部标注），开关只用于隐藏。
+ toggle.checked=enabled;if(enabled)loadFont();
  document.addEventListener('model-language',updateText);
  function reset(){for(const mesh of labels)mesh.geometry.dispose();group.clear();segments.length=0;labels.length=0;values.length=0;screenSegments=[];unplaced=0;spacingNote.hidden=true;}
  function line(a,b){

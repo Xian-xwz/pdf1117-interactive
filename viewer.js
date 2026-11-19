@@ -125,18 +125,22 @@ export function install(env){
  for(const p of parts)for(const m of p.meshes)meshMap.set(m,p);
  const corners=b=>Array.from({length:8},(_,i)=>new T.Vector3(i&1?b.max.x:b.min.x,i&2?b.max.y:b.min.y,i&4?b.max.z:b.min.z));
  // 取景与标注字高互相依赖（字高取屏幕下限换算、标注外包又决定取景），迭代三次收敛后标注再据最终相机重排。
- function fit(direction){for(let pass=0;pass<3;pass++)fitOnce(direction);}
+ function fit(direction){for(let pass=0;pass<6;pass++)fitOnce(direction);}
  function fitOnce(direction){
   controls.enableDamping=false;controls.update();controls.enableDamping=true;
   const current=views.get(view),plan=current.kind==='plan',box=new T.Box3();
-  for(const p of parts)if(plan&&!current.groups?p.c.group!=='roof':p.o.visible)box.union(p.box);
+  // 平面图按可见构件取景，不含示意场地（场地板只是底色，撑大取景会让构件和标注过小）。
+  for(const p of parts)if(p.o.visible&&!(plan&&['site','terrain'].includes(p.c.group)))box.union(p.box);
   if(groundGroup.visible)for(const b of groundBoxes)box.union(b);
   if(box.isEmpty()){for(const p of parts)box.union(p.box);}
   for(const point of [...annotations.extent(),...dimensions.extent()])box.expandByPoint(point);
   const center=box.getCenter(new T.Vector3());camera.up.set(0,1,0);if(plan)camera.up.set(0,0,-1);camera.zoom=1;controls.target.copy(center);camera.position.copy(center).add(new T.Vector3(...direction).normalize().multiplyScalar(90));camera.lookAt(center);camera.updateMatrixWorld();
-  const ps=corners(box).map(p=>p.applyMatrix4(camera.matrixWorldInverse)),xs=ps.map(p=>p.x),ys=ps.map(p=>p.y),aspect=viewport.clientWidth/viewport.clientHeight;
-  const span=Math.max((Math.max(...ys)-Math.min(...ys))/.76/2,(Math.max(...xs)-Math.min(...xs))/aspect/.88/2)*dimensions.frameScale();
-  camera.left=-span*aspect;camera.right=span*aspect;camera.top=span;camera.bottom=-span;camera.updateProjectionMatrix();controls.update();dirty=true;
+  // 明细表/说明让位：右侧停靠扣宽、底部停靠扣高，取每像素世界长度较小（模型较大）者；正交视锥不对称，使模型居中于剩余区域。
+  const W=viewport.clientWidth,H=viewport.clientHeight,ps=corners(box).map(p=>p.applyMatrix4(camera.matrixWorldInverse)),xs=ps.map(p=>p.x),ys=ps.map(p=>p.y);
+  const dx=Math.max(...xs)-Math.min(...xs),dy=Math.max(...ys)-Math.min(...ys),need=(uw,uh)=>Math.max(dx/.88/uw,dy/.76/uh)*dimensions.frameScale();
+  const rw=Math.min(annotations.dock('right'),W*.55),bh=Math.min(annotations.dock('bottom'),H*.45),bottomBetter=bh>0&&need(W,H-bh)<need(W-rw,H);
+  const uw=bottomBetter?W:W-rw,uh=bottomBetter?H-bh:H,wpp=need(uw,uh);annotations.dock(bottomBetter?'bottom':'right');
+  camera.left=-uw/2*wpp;camera.right=(W-uw/2)*wpp;camera.top=uh/2*wpp;camera.bottom=-(H-uh/2)*wpp;camera.updateProjectionMatrix();controls.update();dirty=true;
  }
  function clearCaps(){while(caps.children.length){const c=caps.children[0];meshMap.delete(c);caps.remove(c);c.geometry.dispose();c.material.dispose();}}
  function applyView(reset=true){
