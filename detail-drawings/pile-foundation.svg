@@ -924,5 +924,5 @@
 <text class="scale" x="28.000" y="260.600" font-size="2.4" text-anchor="start" fill="#111111">1:10</text>
 <text class="provenance" x="28.000" y="265.500" font-size="2.4" text-anchor="start" fill="#b3261e">GENERATED FROM MODEL PARAMETERS - NOT AN ORIGINAL DRAWING / 生成图，非原图</text>
 <text class="typical" x="28.000" y="269.500" font-size="2.4" text-anchor="start" fill="#111111">TYPICAL - REPRESENTS 24 OF 27 PILES WITH IDENTICAL PARAMETERS · REF GF-HOUSE-PILE-M02 · ENGINEERING STATUS: PENDING / 工程确认待定</text>
-<text class="legend" x="28.000" y="273.300" font-size="2.4" text-anchor="start" fill="#111111">* = SCHEMATIC VALUE IN MODEL, NOT FROM DRAWING / 示意值 · model.json 820d46db4bb9</text>
+<text class="legend" x="28.000" y="273.300" font-size="2.4" text-anchor="start" fill="#111111">* = SCHEMATIC VALUE IN MODEL, NOT FROM DRAWING / 示意值 · model.json b31d486c8023</text>
 </svg>

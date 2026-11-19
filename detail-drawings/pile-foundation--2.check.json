@@ -27,7 +27,7 @@
       "status": "derived"
     },
     "joist": {
-      "id": "GF-HOUSE-JOIST-002",
+      "id": "GF-HOUSE-RIM-BAY",
       "width_mm": 50.0,
       "depth_mm": 150.0,
       "top_mm": 580.0,
@@ -43,7 +43,7 @@
     "pile_count": 27,
     "typical_count": 2
   },
-  "inputs_sha256": "cb481da2c77c6587bd7af6fd7e1f868b383876597484b8a2ba667edcaeb4ba92",
+  "inputs_sha256": "f40c4f9d61a8e840896a4ce09abe3c407254458d207e04424541385d36cda7d4",
   "scale": "1:10",
   "pending_items": [
     "fixing"
