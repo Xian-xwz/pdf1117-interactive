@@ -7,7 +7,7 @@
 #details .component-summary h4{font-size:13px;margin:14px 0 6px}
 #details .component-summary p,#details .component-summary dl,#details .component-summary li{font-size:13px;line-height:1.65}
 #details .summary-grid{display:grid;grid-template-columns:86px 1fr;gap:8px 10px}
-#details .summary-grid dt{margin:0;color:#596b67}#details .summary-grid dd{font-weight:600}
+#details .summary-grid{grid-template-columns:72px 1fr;gap:14px 12px}#details .summary-grid dt{margin:0;color:#596b67;font-weight:600}#details .summary-grid dd{margin:0;font-weight:400}#details .summary-grid .fact{margin:0 0 5px;line-height:1.6}#details .summary-grid .fact.field-source{color:#7a8a85;font-size:12px}
 #details .summary-status{padding:8px;background:#fff3d6;color:#69501f;border-radius:4px}
 #details .component-summary ul{padding-left:18px;margin:6px 0}#details .component-summary li{margin:6px 0}
 #details .summary-boundary{color:#596b67}#details .detail-technical>summary,#details .detail-provenance>summary{padding:12px 0;font-size:13px;font-weight:600}

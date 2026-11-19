@@ -2,6 +2,7 @@ import {configureControls} from './configuration.js';
 import {createDimensions} from './dimensions.js';
 import {createAnnotations} from './annotations.js';
 import {createViewControls} from './view-controls.js';
+import {createSelectionHighlight} from './selection-highlight.js';
 import {OrbitControls} from './vendor/OrbitControls.js';
 import {createDetailLoader} from './component-details.js';
 import {renderPresentation,wallValue,componentTitle} from './presentation.js';
@@ -91,30 +92,17 @@ export function install(env){
  const wallProperties=cfg.wall_properties?.metadata_sha256===env.meta.metadata_sha256?cfg.wall_properties.components||{}:{};
  const baseColors=new Map(parts.flatMap(p=>p.meshes.map(m=>[m,m.material.color.clone()])));
  const authorAlpha=new Map(parts.flatMap(p=>p.meshes.map(m=>[m,{transparent:m.material.transparent,opacity:m.material.opacity,depthWrite:m.material.depthWrite,castShadow:m.castShadow}])));
- // 选中网格独立出实例批次，原始自发光用于暗相和恢复。
- const selectionEmissives=new Map();
+ // 选中高亮由 selection-highlight.js 负责（高对比色明暗闪烁 + 常亮轮廓，默认开启）；选中网格独立出实例批次。
  const reducedMotion=matchMedia('(prefers-reduced-motion: reduce)');
- const blink=cfg.selection_blink;
- const blinkEnabled=Number.isFinite(blink?.bright_ms)&&blink.bright_ms>0&&Number.isFinite(blink.dark_ms)&&blink.dark_ms>0;
- const periodMs=blinkEnabled?blink.bright_ms+blink.dark_ms:2800;
- let pulseStarted=0,pulseStrength=.20;
- function highlight(mesh){
-  const original=selectionEmissives.get(mesh),{color,emissive}=mesh.material;
-  emissive.setRGB(original.r+color.r*pulseStrength,original.g+color.g*pulseStrength,original.b+color.b*pulseStrength);
- }
- function applyHighlight(strength){
-  pulseStrength=strength;
-  if(selected)for(const mesh of selected.meshes)highlight(mesh);
-  refreshLocalModel();dirty=true;
- }
- reducedMotion.addEventListener('change',()=>{pulseStarted=performance.now();applyHighlight(.20);});
+ const blinkEnabled=true;  // 选中构件被隐藏或剖切掉时清除选中
+ const highlight=createSelectionHighlight({T,cfg,reducedMotion,onChange:()=>{refreshLocalModel();dirty=true;}});
  function applyTheme(){
   const effective=catalog==='arc'?'material':wallTheme;
   for(const p of parts)if(p.c.group==='walls')for(const m of p.meshes){
    if(effective==='material')m.material.color.copy(baseColors.get(m));
    else{const value=wallValue(wallProperties[p.c.id],effective);m.material.color.set(value===null?themeColors.unknown:value?themeColors[effective]:themeColors.context);}
    m.material.emissive.setHex(0);
-   if(p===selected){selectionEmissives.get(m).copy(m.material.emissive);highlight(m);}
+   if(p===selected)highlight.rebase(m);
   }
   document.querySelector('#wall-theme').disabled=catalog==='arc';
   document.querySelector('#theme-status').textContent=effective==='material'?'Material / 材质色':
@@ -125,7 +113,7 @@ export function install(env){
  for(const p of parts)for(const m of p.meshes)meshMap.set(m,p);
  const corners=b=>Array.from({length:8},(_,i)=>new T.Vector3(i&1?b.max.x:b.min.x,i&2?b.max.y:b.min.y,i&4?b.max.z:b.min.z));
  // 取景与标注字高互相依赖（字高取屏幕下限换算、标注外包又决定取景），迭代三次收敛后标注再据最终相机重排。
- function fit(direction){for(let pass=0;pass<6;pass++)fitOnce(direction);}
+ function fit(direction){for(let pass=0;pass<6;pass++)fitOnce(direction);annotations.rebuild();}  // 取景定稿后按最终相机重排一次
  function fitOnce(direction){
   controls.enableDamping=false;controls.update();controls.enableDamping=true;
   const current=views.get(view),plan=current.kind==='plan',box=new T.Box3();
@@ -188,19 +176,17 @@ export function install(env){
   releaseLocalModel();
   closeSource();detailLoader.release();
   document.querySelector('#inspector').classList.remove('has-selection');
-  for(const [m,emissive] of selectionEmissives)m.material.emissive.copy(emissive);
-  selectionEmissives.clear();
-  selected=null;pulseStarted=0;pulseStrength=.20;instances.refresh(null);document.querySelector('#pin').hidden=true;document.querySelector('#clear').hidden=true;
+  highlight.end();
+  selected=null;instances.refresh(null);document.querySelector('#pin').hidden=true;document.querySelector('#clear').hidden=true;
   document.querySelector('#details').setAttribute('aria-busy','false');
   document.querySelector('#details').replaceChildren(el('p','Click a part of the model. 点击构件查看已有资料。','empty'));dirty=true;
  }
  // 同色提亮保留材质及专业主题的语义。
  function select(p){
   clearSelection();if(!p||(blinkEnabled&&(!p.o.visible||isSelectionClipped(p))))return;
-  selected=p;pulseStarted=performance.now();
+  selected=p;
   dimensions.set(p);
-  for(const m of p.meshes)selectionEmissives.set(m,m.material.emissive.clone());
-  applyHighlight(.20);
+  highlight.begin(p.meshes);
   instances.refresh(p);
   renderDetails(p,p.c,Boolean(p.c.detail));
   if(p.c.detail){
@@ -366,17 +352,13 @@ export function install(env){
  new ResizeObserver(resize).observe(viewport);resize();preset(view);initialized=true;
  document.addEventListener('model-language',()=>{if(selected)renderDetails(selected,selected.detailData||selected.c,Boolean(selected.c.detail&&!selected.detailData));updateCatalog();document.querySelector('#view-title').textContent=translated(views.get(view).label||views.get(view).title||view);document.querySelector('#model-note').textContent=localText(cfg.note,cfg.noteZh||cfg.note);translateTree();dirty=true;});
  function draw(now=performance.now()){requestAnimationFrame(draw);controls.update();
-  if(selected&&!reducedMotion.matches&&selected.o.visible&&!document.hidden){
-   const elapsed=Math.max(0,now-pulseStarted);
-   const strength=blinkEnabled?(elapsed%periodMs<blink.bright_ms ? .20 : 0):.16+.10*(.5-.5*Math.cos(elapsed*Math.PI*2/periodMs));
-   if(strength!==pulseStrength)applyHighlight(strength);
-  }
+  if(selected&&selected.o.visible&&!document.hidden)highlight.tick(now);
   if(!dirty)return;dirty=false;dimensions.update(!selected||!isSelectionClipped(selected));annotations.update();renderer.render(scene,camera);
   const pin=document.querySelector('#pin');if(selected){const center=selected.box.getCenter(new T.Vector3()),q=center.clone().project(camera),x=(q.x*.5+.5)*viewport.clientWidth,y=(.5-q.y*.5)*viewport.clientHeight;pin.textContent=selected.displayLabel||selected.c.id;pin.hidden=!selected.o.visible||(selected.meshes[0]?.material.clippingPlanes||[]).some(pl=>pl.distanceToPoint(center)<-1e-5)||q.z<-1||q.z>1||Math.abs(q.x)>1||Math.abs(q.y)>1;pin.style.left=Math.min(viewport.clientWidth-100,Math.max(8,x+12))+'px';pin.style.top=Math.max(8,y-24)+'px';}}
  window.viewer={state:()=>({view,surface,visibleIds:parts.filter(p=>p.o.visible).map(p=>p.c.id),catalog,wallTheme,effectiveTheme:catalog==='arc'?'material':wallTheme,wallColors:Object.fromEntries(parts.filter(p=>p.c.group==='walls').map(p=>[p.c.id,p.meshes[0].material.color.getHexString()])),visible:parts.filter(p=>p.o.visible).length,total:parts.length,wallMode,layers:{...layers},groups:Object.fromEntries([...new Set(parts.map(p=>p.c.group))].map(g=>[g,parts.filter(p=>p.c.group===g&&p.o.visible).length])),upperEnvelope:parts.filter(p=>isEnvelope(p.c)&&p.o.visible).length,framing:parts.filter(p=>p.c.group==='framing'&&p.o.visible).length,opacity:wallMode==='overlay'?.10:1,trusses:parts.filter(p=>p.c.group==='trusses'&&p.o.visible).length,terrain:groundGroup.visible||parts.some(p=>isTerrain(p.c)&&p.o.visible),terrainCaps:caps.children.filter(m=>isTerrain(meshMap.get(m)?.c||{})).map(m=>({opacity:m.material.opacity,depthWrite:m.material.depthWrite})),localTerrainMaterials:localModel&&selected&&isTerrain(selected.c)?materialStates(localModel):[],terrainMaterials:parts.filter(p=>isTerrain(p.c)).map(p=>({id:p.c.id,visible:p.o.visible,opacity:p.meshes[0].material.opacity,depthWrite:p.meshes[0].material.depthWrite,castShadow:p.meshes[0].castShadow})),roof:parts.filter(p=>p.c.group==='roof'&&p.o.visible).length,caps:caps.children.length,selected:selected?.c.id||null,objectRefs:selected?.c.object_refs||[],detail:detailLoader.state(),selectedInstanced:selected?.meshes.some(mesh=>instances.owns(mesh))||false,instances:instances.stats(),renderCalls:renderer.info.render.calls,geometryBuffers:renderer.info.memory.geometries,camera:camera.position.toArray(),target:controls.target.toArray(),zoom:camera.zoom,geometryUnchanged:parts.every((p,i)=>p.o.matrixWorld.toArray().every((x,j)=>Math.abs(x-baseTransforms[i][j])<1e-9))}),project:id=>{const p=parts.find(p=>p.c.id===id);if(!p)return null;const m=p.meshes[0],g=m.geometry,pos=g.attributes.position,ix=g.index;let best=-1,point=new T.Vector3();for(let i=0;i<(ix?ix.count:pos.count);i+=3){const a=[0,1,2].map(j=>new T.Vector3().fromBufferAttribute(pos,ix?ix.getX(i+j):i+j));const area=a[1].clone().sub(a[0]).cross(a[2].clone().sub(a[0])).lengthSq();if(area>best){best=area;point.copy(a[0]).add(a[1]).add(a[2]).multiplyScalar(1/3);}}const q=point.applyMatrix4(m.matrixWorld).project(camera),rect=canvas.getBoundingClientRect();return [rect.left+(q.x*.5+.5)*rect.width,rect.top+(.5-q.y*.5)*rect.height];}};
  // 验证钩子：按世界包围盒投影（fy 为竖向比例），不依赖网格三角形或实例批次。
  window.viewer.projectBox=(id,fy=.5)=>{const p=parts.find(p=>p.c.id===id);if(!p)return null;const q=p.box.getCenter(new T.Vector3());q.y=p.box.min.y+(p.box.max.y-p.box.min.y)*fy;q.project(camera);const rect=canvas.getBoundingClientRect();return [rect.left+(q.x*.5+.5)*rect.width,rect.top+(.5-q.y*.5)*rect.height];};
  const materialStates=object=>{const states=[];object.traverse(m=>{if(m.isMesh)states.push({opacity:m.material.opacity,depthWrite:m.material.depthWrite,castShadow:m.castShadow});});return states;};
- const originalState=window.viewer.state;window.viewer.state=()=>({...originalState(),dimensions:dimensions.state(),annotations:annotations.state(),floorLayerOrder:cfg.floor_layers.map(l=>l.id),fixedLayerToggles:['roof','trusses'].filter(id=>Boolean(document.getElementById(id).offsetParent)),floorLayerLabels:[...document.querySelectorAll('#floor-layers label span')].map(e=>e.textContent),detailSlot:selected?(()=>{const s=slotOf(selected.c);if(!s)return null;const v=slotVariant(s,selected.c);return {id:s.id,status:s.status,image:(v?.image||s.source.image)?.path||null,variant:v?{representative:v.representative,typical_count:v.typical_count,total_count:v.total_count,selectedInGroup:true}:s.source.variants?{selectedInGroup:false}:null};})():null,nodePreview:{hidden:nodePreview.hidden,slot:nodePreview.dataset.slot||null,imageLoaded:Boolean(nodePreview.querySelector('img')?.complete&&nodePreview.querySelector('img')?.naturalWidth)},terrainTranslucent,shadows:renderer.shadowMap.enabled,language:currentLanguage(),selectionPulse:{active:Boolean(selected&&!reducedMotion.matches&&selected.o.visible&&!document.hidden),reducedMotion:reducedMotion.matches,periodMs,strength:pulseStrength}});
+ const originalState=window.viewer.state;window.viewer.state=()=>({...originalState(),dimensions:dimensions.state(),annotations:annotations.state(),floorLayerOrder:cfg.floor_layers.map(l=>l.id),fixedLayerToggles:['roof','trusses'].filter(id=>Boolean(document.getElementById(id).offsetParent)),floorLayerLabels:[...document.querySelectorAll('#floor-layers label span')].map(e=>e.textContent),detailSlot:selected?(()=>{const s=slotOf(selected.c);if(!s)return null;const v=slotVariant(s,selected.c);return {id:s.id,status:s.status,image:(v?.image||s.source.image)?.path||null,variant:v?{representative:v.representative,typical_count:v.typical_count,total_count:v.total_count,selectedInGroup:true}:s.source.variants?{selectedInGroup:false}:null};})():null,nodePreview:{hidden:nodePreview.hidden,slot:nodePreview.dataset.slot||null,imageLoaded:Boolean(nodePreview.querySelector('img')?.complete&&nodePreview.querySelector('img')?.naturalWidth)},terrainTranslucent,shadows:renderer.shadowMap.enabled,language:currentLanguage(),selectionPulse:{...highlight.state(),active:Boolean(selected&&!reducedMotion.matches&&selected.o.visible&&!document.hidden),strength:highlight.state().level}});
  document.querySelector('#loading').hidden=true;translateTree();window.ready=true;draw();
 }

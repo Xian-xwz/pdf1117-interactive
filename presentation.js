@@ -1,5 +1,6 @@
 // 只展示上游提供的资料；这里没有计算、推断支承或工程确认写入。
 import {translated,currentLanguage,localCopy,localText} from './language.js';
+import {splitFacts,isBasisLabel,sourceLabel} from './detail-text.js';
 export const identityKeys=['project_id','object_id','object_revision','source_revision','design_revision','input_digest'];
 export function sameBinding(binding,refs){
  return Boolean(binding&&refs?.length&&refs.some(ref=>identityKeys.every(key=>
@@ -58,7 +59,13 @@ function renderSummary(component,refs){
   if(!compact)card.append(node('p',localCopy(summary.status_key,summary.status||''),'summary-status'));
   const list=node('dl',undefined,'summary-grid');
   if(summary.rows?.length){
-   for(const row of summary.rows){list.append(node('dt',row.label),node('dd',row.value));if(row.basis)list.append(node('dt',''),node('dd',row.basis,'field-source'));}
+   for(const row of summary.rows){
+    const basis=isBasisLabel(row.label),facts=splitFacts(row.value,{basis}),dd=node('dd',undefined,'facts');
+    for(const line of facts.lines.length?facts.lines:basis?[]:[String(row.value??'')])dd.append(node('p',line,'fact'));
+    if(basis){dd.append(node('p',sourceLabel(facts.kind,currentLanguage()!=='en'),'fact field-source'));if(facts.schematic)dd.append(node('span',localText('Schematic','示意'),'chip warning'));}
+    list.append(node('dt',row.label),dd);
+    if(row.basis)list.append(node('dt',''),node('dd',row.basis,'field-source'));
+   }
   }else for(const key of ['member','span','use','connection'])list.append(node('dt',localCopy(key,key)),node('dd',summary[key]??localCopy('not_available')));
   card.append(list);
   if(summary.pending?.length){const pending=node('details');pending.append(node('summary',localCopy('pending',translated('这处还要核实'))+' · '+summary.pending.length));const ul=node('ul');for(const item of summary.pending)ul.append(node('li',item));pending.append(ul);card.append(pending);}

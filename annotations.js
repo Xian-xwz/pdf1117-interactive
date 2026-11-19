@@ -100,6 +100,10 @@ export function createAnnotations({T,scene,camera,viewport,parts=[],cfg={},views
  }
  const center=part=>part.box.getCenter(new T.Vector3());
  // 窄视窗平面图引注只写编号（mark），完整规格见明细表，避免长文字挤小模型。
+ // 平面图“引注框”：member_label 与带 ref 的 note 一律走直角引线 + 图外文字块（规则见 annotation-rules.json text_rules）。
+ const isPlan=()=>(views.get(getView())||{}).kind==='plan';
+ const isCallout=i=>isPlan()&&(i.kind==='member_label'||(i.kind==='note'&&i.ref))&&!i.offset;
+ const calloutLines=i=>i.kind==='note'?i.lines:[labelText(i)];
  const labelText=item=>item.mark&&(views.get(getView())||{}).kind==='plan'&&viewport.clientWidth<600?item.mark:item.text;
  function draw(item,f,L=null){
   const s=textHeight(),k=s/.22;scopeBounds();
@@ -113,6 +117,12 @@ export function createAnnotations({T,scene,camera,viewport,parts=[],cfg={},views
    // 符号被排到构件外侧时，用引线连回原指示点（标高数值仍由符号文字给出）。
    if(dx||dh)segments([origin,base.clone().addScaledVector(f.axis,-Math.sign(dx)*.45*k)],true);
    return text(label,tip.clone().addScaledVector(f.up,.28*k).addScaledVector(f.axis,-.1*k),f,s);
+  }
+  const co=L?.get(item.id)?.callout;
+  if(co){
+   const cs=co.cs,d=co.pts[1].clone().sub(co.tip).normalize(),wing=.2*cs;
+   segments([co.tip,co.pts[1],co.pts[1],co.pts[2],co.tip,co.tip.clone().addScaledVector(d,.9*cs).addScaledVector(f.axis,.3*cs),co.tip,co.tip.clone().addScaledVector(d,.9*cs).addScaledVector(f.axis,-.3*cs)],true);
+   let mesh=null;co.lines.forEach((line,j)=>{mesh=text(line,co.text[j],f,cs,co.dir>0?'left':'right')||mesh;});return mesh;
   }
   if(item.kind==='member_label'){
    const part=byId.get(item.ref);if(!part)throw Error('Missing annotation reference: '+item.ref);
@@ -185,7 +195,7 @@ export function createAnnotations({T,scene,camera,viewport,parts=[],cfg={},views
   const segCross=(p,q,r,t)=>ccw(p,q,r)*ccw(p,q,t)<0&&ccw(r,t,p)*ccw(r,t,q)<0;
   const leaders=[],solid=[],guides=[];for(const pts of dimensionObstacles())solid.push(rectOf(pts));
   for(const item of wanted){
-   if(item.kind==='level'||item.kind==='schedule'||(item.kind==='member_label'&&!item.offset))continue;
+   if(item.kind==='level'||item.kind==='schedule'||isCallout(item)||(item.kind==='member_label'&&!item.offset))continue;
    const boxes=[];boxes.lines=[];probe=boxes;try{draw(item,f,null);}catch(e){}finally{probe=null;}
    for(const pts of boxes)solid.push(rectOf(pts));
    for(const [a,b] of boxes.lines)guides.push([uv(a),uv(b)]);
@@ -205,16 +215,32 @@ export function createAnnotations({T,scene,camera,viewport,parts=[],cfg={},views
    if(t1){t1.q='text-clear';return t1;}
    const semi=candidates.find(c=>free(c.r));if(semi){semi.q='semi';return semi;}first.q='first';return first;};
   const byCost=list=>list.sort((a,b)=>a.cost-b.cost);
-  // 平面图：引注文字竖排成一列，置于构件与尺寸文字外包的左侧，按指示点自上而下排序、等距错开，文字互不重叠，引线按序不交叉。
+  // 平面图引注框：箭头落在构件上，直角引线垂直引到图外边距（取最近的上/下图边，或 entry 指定），再接水平肩线，文字块在图外，行间自肩线向外堆叠。
+  // 候选 = 层（离图边由近到远）× 引线 x（沿构件范围由中心向两侧）× 肩线方向；取首个文字框不压已占框、引线不穿文字框且不交叉者。
   if(plan){
-   const col=wanted.filter(i=>i.kind==='member_label'&&!i.offset&&byId.has(i.ref)).map(item=>{const A=center(byId.get(item.ref));return {item,A,a:uv(A)};});
-   if(col.length){
-    scopeBounds();const xs=[...hullAll.map(p=>p[0]),...solid.map(r=>r.l),uv(bounds.min)[0],uv(bounds.max)[0]].filter(Number.isFinite);
-    const left=Math.min(...xs)-1.2*k,pitch=1.9*s;let prev=Infinity;
-    col.sort((p,q)=>q.a[1]-p.a[1]||p.a[0]-q.a[0]);
-    for(const c of col){const y=Math.min(c.a[1],prev-pitch);prev=y;
-     const E=c.A.clone().addScaledVector(f.axis,left+.3*k-c.a[0]).addScaledVector(f.up,y-c.a[1]);
-     out.set(c.item.id,{anchor:c.A,end:E,sign:-1,q:'column'});solid.push({l:left-textWidth(labelText(c.item),s)-.1,r:left+.3*k,b:y-s/2,t:y+s/2});leaders.push([c.a,[left+.3*k,y]]);}
+   const cs=.7*s,lp=1.35*cs,items=wanted.filter(i=>isCallout(i)&&byId.has(i.ref));
+   const allR=[...solid,...hullAll.map(p=>({l:p[0],r:p[0],b:p[1],t:p[1]}))];
+   const frame={l:Math.min(...allR.map(r=>r.l)),r:Math.max(...allR.map(r=>r.r)),b:Math.min(...allR.map(r=>r.b)),t:Math.max(...allR.map(r=>r.t))};
+   const W=(u,v,y)=>new T.Vector3().addScaledVector(f.axis,u).addScaledVector(f.up,v).setY(y);
+   for(const item of items){
+    const part=byId.get(item.ref),pb=rectOf(Array.from({length:8},(_,i)=>new T.Vector3(i&1?part.box.max.x:part.box.min.x,part.box.min.y,i&4?part.box.max.z:part.box.min.z))),cx=(pb.l+pb.r)/2,cy=(pb.b+pb.t)/2,y=center(part).y;
+    const lines=calloutLines(item),w=Math.max(...lines.map(l=>textWidth(l,cs))),n=lines.length,tall=(n-1)*lp+cs;
+    const nearTop=Math.abs(frame.t-cy)<=Math.abs(cy-frame.b),sides=item.entry==='top'?['top']:item.entry==='bottom'?['bottom']:nearTop?['top','bottom']:['bottom','top'];
+    const xs=[cx];for(let j=1;cx+j*.6*s<=pb.r||cx-j*.6*s>=pb.l;j++){if(cx+j*.6*s<=pb.r)xs.push(cx+j*.6*s);if(cx-j*.6*s>=pb.l)xs.push(cx-j*.6*s);}
+    let best=null,first=null;
+    search:for(const side of sides)for(let tier=0;tier<8;tier++)for(const x of xs)for(const dir of [1,-1]){
+     const yo=side==='top'?frame.t+1.2*s+tier*tall*1.2:frame.b-1.2*s-tier*tall*1.2,sh=x+dir*.5*k,
+      r=side==='top'?{l:dir>0?sh:sh-w,r:dir>0?sh+w:sh,b:yo-cs/2,t:yo-cs/2+tall}:{l:dir>0?sh:sh-w,r:dir>0?sh+w:sh,b:yo+cs/2-tall,t:yo+cs/2};
+     const c={side,x,dir,yo,sh,r,segs:[[[x,cy],[x,yo]],[[x,yo],[sh,yo]]]};first=first||c;
+     if(solid.some(o=>hit(grow(r,gap),o)))continue;
+     if(leaders.some(([a,b])=>a[0]===b[0]&&Math.abs(a[0]-x)<1.0*s))continue;  // 竖直引线互不并行贴近
+     if(!c.segs.every(([p,q])=>textClear(p,q)&&!leaders.some(([a,b])=>segCross(p,q,a,b))))continue;
+     best=c;break search;
+    }
+    const c=best||first;
+    const tpos=lines.map((_,j)=>W(c.dir>0?c.sh+.05:c.sh-.05,c.side==='top'?c.yo+(n-1-j)*lp:c.yo-j*lp,y));
+    out.set(item.id,{callout:{tip:W(c.x,cy,y),pts:[null,W(c.x,c.yo,y),W(c.sh,c.yo,y)],lines,text:tpos,dir:c.dir,cs},q:best?'callout':'callout-first'});
+    solid.push(c.r);for(const sg of c.segs)leaders.push(sg);
    }
   }
   for(const item of wanted.filter(i=>!plan&&i.kind==='member_label'&&!i.offset)){
@@ -268,7 +294,7 @@ export function createAnnotations({T,scene,camera,viewport,parts=[],cfg={},views
  function clear(){tables.replaceChildren();for(const o of [...group.children]){o.geometry.dispose();group.remove(o);}built=[];}
  function rebuild(){
   clear();error='';lastKey=viewKey();
-  const all=items.filter(i=>i.view_ids.includes(getView())&&enabled(i.kind)),block=i=>i.kind==='schedule'||i.kind==='note',wanted=all.filter(i=>!block(i));drawTables(all.filter(block));built.push(...all.filter(block).map(i=>i.id));
+  const all=items.filter(i=>i.view_ids.includes(getView())&&enabled(i.kind)),block=i=>i.kind==='schedule'||(i.kind==='note'&&!i.ref),wanted=all.filter(i=>!block(i)&&!(i.kind==='note'&&i.ref&&!isPlan()));drawTables(all.filter(block));built.push(...all.filter(block).map(i=>i.id));
   if(wanted.length&&!font){loadFont();}
   else if(font){const f=frame();let L=null;try{L=computeLayout(wanted,f);}catch(e){error=e.message;}for(const item of wanted){current=item;try{draw(item,f,L);built.push(item.id);}catch(e){error=e.message;}}current=null;}
   updatePanel();onChange();
@@ -278,7 +304,7 @@ export function createAnnotations({T,scene,camera,viewport,parts=[],cfg={},views
  function update(){if(lastKey!==viewKey())rebuild();}
  // 取景用：按与绘制相同的几何估算当前视图已开启标注的外包点（无需字形，文字宽按字数估算）。
  function extent(){
-  const points=[],wanted=items.filter(i=>i.view_ids.includes(getView())&&enabled(i.kind)&&i.kind!=='schedule'&&i.kind!=='note'),f=frame();let L=null;try{L=computeLayout(wanted,f);}catch(e){}
+  const points=[],wanted=items.filter(i=>i.view_ids.includes(getView())&&enabled(i.kind)&&i.kind!=='schedule'&&!(i.kind==='note'&&(!i.ref||!isPlan()))),f=frame();let L=null;try{L=computeLayout(wanted,f);}catch(e){}
   sink=points;
   try{for(const item of wanted){try{draw(item,f,L);}catch(e){}}}finally{sink=null;}
   return points;
