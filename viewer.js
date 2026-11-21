@@ -152,7 +152,9 @@ export function install(env){
    for(const m of p.meshes){const a=authorAlpha.get(m);m.material.transparent=translucentGround||overlay||a.transparent;m.material.opacity=translucentGround?.30:overlay?.10:a.opacity;m.material.depthWrite=translucentGround||overlay?false:a.depthWrite;m.castShadow=translucentGround||overlay?false:a.castShadow;}
    if(plan&&Number.isFinite(cfg.levels[c.block]?.[floor]))plane=new T.Plane(new T.Vector3(0,-1,0),cfg.levels[c.block][floor]+(current.cutAbove??1.2));
    else if(cut){const s=isTerrain(c)?Object.values(current.sections)[0]:current.sections[c.block];if(s)plane=new T.Plane(new T.Vector3(...s.normal),s.constant);}
-   for(const m of p.meshes){m.material.clippingPlanes=plane?[plane]:[];m.material.clipShadows=true;m.material.needsUpdate=true;for(const e of m.children)if(e.isLineSegments){e.visible=(!plan||c.group==='stairs')&&!overlay;e.material.clippingPlanes=plane?[plane]:[];}}
+   for(const m of p.meshes){m.material.clippingPlanes=plane?[plane]:[];m.material.clipShadows=true;m.material.needsUpdate=true;for(const e of m.children)if(e.isLineSegments){const floorTimber=c.block==='HOUSE'&&c.group==='subfloor'&&c.material==='timber'&&c.role!=='pile';
+       e.visible=(!plan||c.group==='stairs'||floorTimber)&&!overlay;
+       if(floorTimber){e.material.color.set('#715432');e.material.opacity=.55;e.material.depthWrite=false;}e.material.clippingPlanes=plane?[plane]:[];}}
    if(p.o.visible&&plane&&!overlay&&!c.display_only){const first=caps.children.length;sectionCap(terrainMeshes(p),plane);for(const cap of caps.children.slice(first)){meshMap.set(cap,p);if(isTerrain(c)){const source=p.meshes[0].material;cap.material.transparent=source.transparent;cap.material.opacity=source.opacity;cap.material.depthWrite=source.depthWrite;cap.material.needsUpdate=true;}}}
   }
   document.querySelector('#view-title').textContent=current.label||current.title||current.id;document.querySelector('#view-zh').textContent=current.label_zh||'';
